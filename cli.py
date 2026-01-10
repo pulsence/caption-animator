@@ -176,6 +176,16 @@ def load_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def merge_with_builtin_defaults(preset: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Merge a user preset over the built-in 'modern_box' defaults
+    so missing keys are filled safely.
+    """
+    base = dict(BUILTIN_PRESETS["modern_box"])
+    base.update(preset)
+    return base
+
+
 def load_preset(preset_ref: str) -> Dict[str, Any]:
     """
     preset_ref:
@@ -198,7 +208,7 @@ def load_preset(preset_ref: str) -> Dict[str, Any]:
         preset = data[name_part]
         if not isinstance(preset, dict):
             die(f"Preset '{name_part}' in '{p}' must be a dict.")
-        return dict(preset)
+        return merge_with_builtin_defaults(preset)
 
     p = Path(preset_ref)
     if p.exists():
@@ -207,7 +217,7 @@ def load_preset(preset_ref: str) -> Dict[str, Any]:
             # Could be a single preset dict or a dict of presets.
             # If it "looks like" a single preset (contains font_size or padding), treat as single.
             if "font_size" in data or "padding" in data or "max_width_px" in data:
-                return dict(data)
+                return merge_with_builtin_defaults(preset)
             # Otherwise ambiguous multi-preset: require name.
             die(f"Preset file '{p}' appears to contain multiple presets. Use '{p}:preset_name'.")
         die(f"Preset file '{p}' must be a dict.")
