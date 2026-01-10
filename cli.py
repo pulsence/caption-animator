@@ -175,6 +175,79 @@ def which_or_die(cmd: str) -> str:
 def load_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
+def deep_copy_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    # JSON roundtrip is simplest for your config-shaped dicts
+    return json.loads(json.dumps(d))
+
+
+def get_nested(d: Dict[str, Any], key: str) -> Any:
+    cur: Any = d
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            raise KeyError(key)
+        cur = cur[part]
+    return cur
+
+
+def set_nested(d: Dict[str, Any], key: str, value: Any) -> None:
+    parts = key.split(".")
+    cur: Any = d
+    for p in parts[:-1]:
+        if p not in cur or not isinstance(cur[p], dict):
+            cur[p] = {}
+        cur = cur[p]
+    cur[parts[-1]] = value
+
+
+def parse_value(s: str) -> Any:
+    s = s.strip()
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
+    if s.lower() in ("none", "null"):
+        return None
+
+    # int
+    if re.fullmatch(r"[+-]?\d+", s):
+        try:
+            return int(s)
+        except Exception:
+            pass
+
+    # float
+    if re.fullmatch(r"[+-]?\d+(\.\d+)?", s):
+        try:
+            return float(s)
+        except Exception:
+            pass
+
+    # JSON list/dict inline
+    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+
+    return s
+
+
+def save_preset_json(path: Path, preset: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(preset, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def print_preset_summary(preset: Dict[str, Any], apply_animation: bool, out_path: Path, fps: str, safety_scale: float) -> None:
+    anim = preset.get("animation") or {}
+    eprint("Current preset/settings:")
+    eprint(f"  out          : {out_path}")
+    eprint(f"  fps          : {fps}")
+    eprint(f"  safety_scale : {safety_scale}")
+    eprint(f"  apply_animation : {apply_animation}")
+    eprint(f"  font         : {preset.get('font_name')} size={preset.get('font_size')} bold={preset.get('bold')} italic={preset.get('italic')}")
+    eprint(f"  colors       : primary={preset.get('primary_color')} outline={preset.get('outline_color')} shadow={preset.get('shadow_color')}")
+    eprint(f"  outline/shadow: outline_px={preset.get('outline_px')} shadow_px={preset.get('shadow_px')} blur_px={preset.get('blur_px')}")
+    eprint(f"  wrap         : max_width_px={preset.get('max_width_px')} line_spacing={preset.get('line_spacing')} padding={preset.get('padding')}")
+    eprint(f"  animation    : {anim}")
+
 
 def merge_with_builtin_defaults(preset: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -879,6 +952,251 @@ def run_ffmpeg_render_overlay(
 # -----------------------------
 # Main
 # -----------------------------
+def interactive_mode(args: argparse.Namespace, in_path: Path, out_path: Path) -> int:
+    prog = Progress(enabled=not args.quiet)
+    ffmpeg = which_or_die("ffmpeg")
+
+    ext = in_path.suffix.lower().lstrip(".")
+    if ext not in ("srt", "ass"):
+        die("Input must be .srt or .ass")
+
+    # Load subtitles once
+    try:
+        subs = pysubs2.load(str(in_path))
+        prog.step(f"Loaded subtitles: {len(subs.events)} events")
+    except Exception as e:
+        die(f"Failed to load subtitles: {e}")
+
+    # Preset must exist for SRT; for ASS we still want it for sizing / reskin
+    preset: Optional[Dict[str, Any]] = None
+    need_preset = (ext == "srt") or args.reskin or (not args.no_preset_for_ass and ext == "ass")
+    if need_preset:
+        preset = load_preset(args.preset)
+
+    if preset is None:
+        die("Interactive mode requires a preset (for sizing). Provide --preset or use --reskin.")
+
+    baseline_preset = deep_copy_dict(preset)
+
+    apply_animation = bool(args.apply_animation)
+    if args.no_animation:
+        apply_animation = False
+    if ext == "srt" and not args.apply_animation and not args.no_animation:
+        apply_animation = True
+
+    fps = str(args.fps)
+    safety_scale = float(args.safety_scale)
+    tail_pad = 0.25  # fixed for now; you can later add --tail-pad
+
+    def do_render() -> None:
+        nonlocal preset, out_path, fps, safety_scale, apply_animation
+
+        with tempfile.TemporaryDirectory(prefix="render_overlay_") as td:
+            tdir = Path(td)
+            ass_out = tdir / "work.ass"
+
+            # Build ASS working file
+            if ext == "srt":
+                subs_ass = convert_srt_to_ass(subs, preset, apply_animation=apply_animation)
+            else:
+                subs_ass = subs
+                if args.reskin:
+                    subs_ass = reskin_ass(
+                        subs_ass,
+                        preset,
+                        strip_existing_overrides=bool(args.strip_overrides),
+                        apply_animation=apply_animation,
+                    )
+
+            # Size
+            size = compute_tight_overlay_size(subs_ass, preset, safety_scale=safety_scale)
+
+            # Write ASS with PlayRes
+            subs_ass.info["PlayResX"] = str(size.width)
+            subs_ass.info["PlayResY"] = str(size.height)
+            subs_ass.save(str(ass_out), format_="ass")
+
+            substitute_slide_placeholders(ass_out, preset, size)
+
+            end_ms = compute_subs_end_ms(subs_ass)
+            duration_sec = (end_ms / 1000.0) + tail_pad
+
+            prog.step(f"Computed tight overlay size: {size.width}x{size.height}")
+            prog.step(f"Subtitle length: {end_ms} ms  (~{duration_sec:.2f} s)")
+            prog.step("Rendering overlay video via FFmpeg...")
+
+            run_ffmpeg_render_overlay(
+                ffmpeg=ffmpeg,
+                ass_path=ass_out,
+                out_path=out_path,
+                size=size,
+                fps=fps,
+                loglevel=str(args.loglevel),
+                keep_temp=bool(args.keep_temp),
+                duration_sec=duration_sec,
+                show_progress=not (bool(args.quiet) or bool(args.hide_ffmpeg_progress)),
+            )
+
+            prog.step("FFmpeg render complete")
+
+            if args.keep_ass:
+                ass_final = out_path.with_suffix(".ass")
+                shutil.copy2(ass_out, ass_final)
+                eprint(f"Wrote: {ass_final}")
+
+            if args.keep_temp:
+                dbg_dir = out_path.parent / (out_path.stem + "_debug")
+                if dbg_dir.exists():
+                    shutil.rmtree(dbg_dir)
+                shutil.copytree(tdir, dbg_dir)
+                eprint(f"Kept debug directory: {dbg_dir}")
+
+            eprint(f"Overlay rendered: {out_path}")
+            eprint(f"Overlay size: {size.width}x{size.height} @ {fps} fps")
+
+    eprint("\nInteractive mode. Type 'help' for commands.\n")
+
+    while True:
+        try:
+            line = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            eprint("\nExiting.")
+            return 0
+
+        if not line:
+            continue
+
+        cmd, *rest = line.split(" ", 1)
+        cmd = cmd.lower()
+
+        if cmd in ("q", "quit", "exit"):
+            return 0
+
+        if cmd in ("h", "help", "?"):
+            eprint(
+                "Commands:\n"
+                "  r | render                 Render with current settings\n"
+                "  p | print                  Print preset/settings summary\n"
+                "  set <key> <value>          Set preset key (supports nested: animation.type)\n"
+                "  inc <key> <delta>          Increment numeric preset key\n"
+                "  toggle <key>               Toggle boolean preset key\n"
+                "  out <path.mov>             Change output path\n"
+                "  fps <value>                Change FPS\n"
+                "  scale <value>              Change safety_scale\n"
+                "  anim on|off                Enable/disable animation injection\n"
+                "  save <path.json>           Save current preset as JSON\n"
+                "  reset                      Reset preset to initial loaded state\n"
+                "  quit                       Exit\n"
+            )
+            continue
+
+        if cmd in ("r", "render"):
+            do_render()
+            continue
+
+        if cmd in ("p", "print"):
+            print_preset_summary(preset, apply_animation, out_path, fps, safety_scale)
+            continue
+
+        if cmd == "reset":
+            preset = deep_copy_dict(baseline_preset)
+            eprint("Preset reset.")
+            continue
+
+        if cmd == "save":
+            if not rest:
+                eprint("Usage: save <path.json>")
+                continue
+            p = Path(rest[0].strip())
+            save_preset_json(p, preset)
+            eprint(f"Saved preset: {p}")
+            continue
+
+        if cmd == "out":
+            if not rest:
+                eprint("Usage: out <path.mov>")
+                continue
+            out_path = Path(rest[0].strip())
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            eprint(f"Output set: {out_path}")
+            continue
+
+        if cmd == "fps":
+            if not rest:
+                eprint("Usage: fps <value>")
+                continue
+            fps = rest[0].strip()
+            eprint(f"FPS set: {fps}")
+            continue
+
+        if cmd == "scale":
+            if not rest:
+                eprint("Usage: scale <value>")
+                continue
+            safety_scale = float(rest[0].strip())
+            eprint(f"safety_scale set: {safety_scale}")
+            continue
+
+        if cmd == "anim":
+            if not rest:
+                eprint("Usage: anim on|off")
+                continue
+            mode = rest[0].strip().lower()
+            if mode in ("on", "true", "1"):
+                apply_animation = True
+            elif mode in ("off", "false", "0"):
+                apply_animation = False
+            else:
+                eprint("Usage: anim on|off")
+                continue
+            eprint(f"apply_animation: {apply_animation}")
+            continue
+
+        # Commands with 2 args: set/inc
+        if cmd in ("set", "inc"):
+            if not rest:
+                eprint(f"Usage: {cmd} <key> <value>")
+                continue
+            parts = rest[0].split(" ", 1)
+            if len(parts) != 2:
+                eprint(f"Usage: {cmd} <key> <value>")
+                continue
+            key = parts[0].strip()
+            val = parse_value(parts[1])
+
+            try:
+                if cmd == "set":
+                    set_nested(preset, key, val)
+                    eprint(f"{key} = {get_nested(preset, key)}")
+                else:
+                    cur = get_nested(preset, key)
+                    if not isinstance(cur, (int, float)) or not isinstance(val, (int, float)):
+                        die("inc requires numeric key and numeric delta.")
+                    set_nested(preset, key, cur + val)
+                    eprint(f"{key} = {get_nested(preset, key)}")
+            except KeyError:
+                eprint(f"Unknown key: {key}")
+            continue
+
+        if cmd == "toggle":
+            if not rest:
+                eprint("Usage: toggle <key>")
+                continue
+            key = rest[0].strip()
+            try:
+                cur = get_nested(preset, key)
+            except KeyError:
+                eprint(f"Unknown key: {key}")
+                continue
+            if not isinstance(cur, bool):
+                eprint(f"Key '{key}' is not boolean (value: {cur})")
+                continue
+            set_nested(preset, key, not cur)
+            eprint(f"{key} = {get_nested(preset, key)}")
+            continue
+
+        eprint("Unknown command. Type 'help'.")
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(
@@ -960,6 +1278,11 @@ def main() -> int:
         action="store_true",
         help="Hide FFmpeg render progress (frames/time).",
     )
+    ap.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Interactive iteration mode: tweak preset settings and re-render quickly.",
+    )
 
 
     args = ap.parse_args()
@@ -985,6 +1308,9 @@ def main() -> int:
 
     prog.step(f"Input: {in_path.name}")
     prog.step(f"Output: {out_path.name}")
+
+    if args.interactive:
+        return interactive_mode(args, in_path, out_path)
 
     preset: Optional[Dict[str, Any]] = None
     need_preset = (ext == "srt") or args.reskin or (not args.no_preset_for_ass and ext == "ass")

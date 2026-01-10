@@ -54,6 +54,8 @@ Presets define fonts, colors, layout, and animations. They can be:
 
 Animation settings live under the `animation` key in a preset file, for example in `presets/preset.json`. The built-in preset definitions (including animation fields and defaults) are in `cli.py` under `BUILTIN_PRESETS`.
 
+See [Libass](https://github.com/libass/libass?tab=readme-ov-file) for more documentation on ASS styling.
+
 ### Example preset (JSON)
 ```json
 {
