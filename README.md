@@ -203,8 +203,6 @@ src/caption_animator/
 └── utils/          # File utilities
 ```
 
-See [REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md) and [MIGRATION_COMPLETE.md](MIGRATION_COMPLETE.md) for details.
-
 ## Development
 
 ### Install in Development Mode

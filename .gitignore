@@ -38,3 +38,4 @@ TODO
 *.swp
 *.bak
 *~
+.claude_files/
