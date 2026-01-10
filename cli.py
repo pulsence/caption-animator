@@ -373,6 +373,39 @@ def load_preset_file(path: Path) -> Any:
     die(f"Unsupported preset file extension '{ext}'. Use .yaml/.yml or .json.")
 
 
+def apply_override_at_start(text: str, override: str) -> str:
+    """
+    Insert override tags at the start of the dialogue line.
+    If the line already starts with {...}, inject inside that block.
+    """
+    if not override:
+        return text
+    if text.startswith("{") and "}" in text:
+        end = text.find("}")
+        head = text[1:end]
+        rest = text[end+1:]
+        return "{" + override + head + "}" + rest
+    return "{" + override + "}" + text
+
+
+def apply_center_positioning(subs: pysubs2.SSAFile, preset: Dict[str, Any], size: OverlaySize) -> None:
+    """
+    Force all events to be centered in the overlay canvas by injecting \pos + \an5.
+    This avoids baseline/outline clipping when a subtitle wraps to multiple lines.
+    """
+    x, y = compute_anchor_position(preset, size)
+    pos_override = fr"\an5\pos({x},{y})"
+
+    for ev in subs.events:
+        if not isinstance(ev, pysubs2.SSAEvent):
+            continue
+        ev.text = apply_override_at_start(ev.text, pos_override)
+
+    # Keep the style consistent as well (not strictly required because \an5 overrides per line)
+    if "Default" in subs.styles:
+        subs.styles["Default"].alignment = 5
+
+
 def parse_hex_color(color: str) -> Tuple[int, int, int]:
     """
     "#RRGGBB" -> (r,g,b)
@@ -993,30 +1026,21 @@ def compute_tight_overlay_size(
     return OverlaySize(width=w_final, height=h_final)
 
 
-def compute_anchor_position(
-    preset: Dict[str, Any],
-    size: OverlaySize,
-) -> Tuple[int, int]:
+def compute_anchor_position(preset: Dict[str, Any], size: OverlaySize) -> Tuple[int, int]:
     """
-    Compute a stable anchor (x,y) for placement inside the overlay canvas.
-    We render centered horizontally and near bottom with padding.
-
-    Because overlay is tight and will be positioned in Resolve, we use padding to keep
-    comfortable breathing room.
-
-    Returns (x, y) in pixels.
+    Compute an anchor (x,y) inside the overlay canvas.
+    We center within the padded area so multi-line text doesn't clip at the bottom.
     """
     padding = preset.get("padding", [40, 60, 50, 60])
     pad_t, pad_r, pad_b, pad_l = map(int, padding)
 
-    # Anchor point used for \pos when needed. We'll center horizontally.
-    x = size.width // 2
+    left = pad_l
+    right = size.width - pad_r
+    top = pad_t
+    bottom = size.height - pad_b
 
-    # For bottom-aligned text: anchor near bottom minus bottom padding.
-    # ASS alignment will interpret anchor differently; but \pos with alignment=2 (bottom-center)
-    # places the text bottom-center at x,y. So y should be height - pad_b.
-    y = size.height - pad_b
-
+    x = (left + right) // 2
+    y = (top + bottom) // 2
     return x, y
 
 
@@ -1232,7 +1256,8 @@ def interactive_mode(args: argparse.Namespace, in_path: Path, out_path: Path) ->
 
             # Size
             size = compute_tight_overlay_size(subs_ass, preset, safety_scale=safety_scale)
-
+            apply_center_positioning(subs_ass, preset, size)
+            
             # Write ASS with PlayRes
             subs_ass.info["PlayResX"] = str(size.width)
             subs_ass.info["PlayResY"] = str(size.height)
@@ -1603,6 +1628,8 @@ def main() -> int:
         # Substitute slide animation placeholders if used
         size = compute_tight_overlay_size(subs_ass, preset, safety_scale=float(args.safety_scale))
         prog.step(f"Computed tight overlay size: {size.width}x{size.height}")
+
+        apply_center_positioning(subs_ass, preset, size)
 
         # Write working ASS
         try:
