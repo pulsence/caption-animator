@@ -214,12 +214,14 @@ pip install -e .
 
 ### Run Tests
 ```bash
-# Basic tests
-python test_animations_basic.py
-python test_refactored_basic.py
-
 # End-to-end test
 caption-animator test.srt --preset modern_box --out test_output.mov
+
+# With custom preset
+caption-animator test.srt --preset presets/word_highlight.json --out test_output.mov
+
+# Interactive mode test
+caption-animator test.srt --interactive
 ```
 
 ### Code Quality
