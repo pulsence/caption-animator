@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "caption-animator"
-version = "0.1.0"
-description = "Render SRT/ASS subtitle files into tight, animated, alpha-channel video overlays for DaVinci Resolve."
+version = "0.2.0"
+description = "Render SRT/ASS subtitle files into animated, alpha-channel video overlays with plugin-based animation system."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -23,14 +23,16 @@ keywords = [
   "ffmpeg",
   "davinci-resolve",
   "video",
-  "overlay"
+  "overlay",
+  "animation",
+  "plugins"
 ]
 
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: Developers",
-  "Intended Audience :: Video Professionals",
+  "Intended Audience :: End Users/Desktop",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
@@ -38,8 +40,10 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Multimedia :: Video",
-  "Topic :: Multimedia :: Sound/Audio"
+  "Topic :: Multimedia :: Sound/Audio",
+  "Typing :: Typed"
 ]
 
 
@@ -55,16 +59,26 @@ dev = [
   "black",
   "ruff",
   "mypy",
-  "pytest"
+  "pytest",
+  "pytest-cov"
 ]
 
 
 [project.scripts]
-render-overlay = "cli:main"
+caption-animator = "caption_animator.cli.main:main"
+
+
+[project.urls]
+Homepage = "https://github.com/timeckii/caption-animator"
+Issues = "https://github.com/timeckii/caption-animator/issues"
+Documentation = "https://github.com/timeckii/caption-animator#readme"
 
 
 [tool.setuptools]
-py-modules = ["cli"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 
 [tool.black]
@@ -76,8 +90,18 @@ target-version = ["py39"]
 line-length = 100
 select = ["E", "F", "I"]
 ignore = ["E501"]
+src = ["src"]
 
 
 [tool.mypy]
 python_version = "3.9"
 ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
