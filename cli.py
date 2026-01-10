@@ -892,6 +892,9 @@ def convert_srt_to_ass(
         if combined_override:
             text = apply_animation_to_event_text(text, combined_override)
 
+        # Convert real newlines back to ASS escape sequences for proper rendering
+        text = text.replace("\n", r"\N")
+
         new_ev = pysubs2.SSAEvent(
             start=ev.start,
             end=ev.end,
@@ -950,6 +953,9 @@ def reskin_ass(
             combined_override += anim_override
         if combined_override:
             txt = apply_animation_to_event_text(txt, combined_override)
+
+        # Convert real newlines back to ASS escape sequences for proper rendering
+        txt = txt.replace("\n", r"\N")
 
         ev.text = txt
 
