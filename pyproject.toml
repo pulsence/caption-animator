@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "caption-animator"
-version = "0.2.0"
+version = "0.1.0"
 description = "Render SRT/ASS subtitle files into animated, alpha-channel video overlays with plugin-based animation system."
 readme = "README.md"
 requires-python = ">=3.9"

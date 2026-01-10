@@ -30,7 +30,7 @@ Example:
     renderer.render(ass_path, output_path, size, fps="30", duration_sec=120)
 """
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 __author__ = "Timothy Eck"
 __license__ = "MIT"
 
