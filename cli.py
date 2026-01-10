@@ -230,6 +230,40 @@ def parse_value(s: str) -> Any:
     return s
 
 
+def list_available_presets() -> None:
+    eprint("Available presets:\n")
+
+    # Built-in presets
+    if BUILTIN_PRESETS:
+        eprint("Built-in:")
+        for name in sorted(BUILTIN_PRESETS.keys()):
+            eprint(f"  {name}")
+    else:
+        eprint("Built-in: (none)")
+
+    # presets/ directory
+    presets_dir = Path("presets")
+    found_files: List[str] = []
+
+    if presets_dir.exists() and presets_dir.is_dir():
+        for p in sorted(presets_dir.iterdir()):
+            if p.is_file() and p.suffix.lower() in (".json", ".yaml", ".yml"):
+                found_files.append(p.name)
+
+    if found_files:
+        eprint("\npresets/ directory:")
+        for name in found_files:
+            eprint(f"  {name}")
+    else:
+        eprint("\npresets/ directory: (none found)")
+
+    eprint(
+        "\nUsage:\n"
+        "  --preset <name>\n"
+        "  --preset presets/<file>\n"
+    )
+
+
 def save_preset_json(path: Path, preset: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(preset, indent=2, sort_keys=True), encoding="utf-8")
@@ -259,6 +293,37 @@ def merge_with_builtin_defaults(preset: Dict[str, Any]) -> Dict[str, Any]:
     return base
 
 
+def resolve_preset_path(preset_ref: str) -> Optional[Path]:
+    """
+    Resolve a preset reference to a file path.
+
+    Resolution order:
+      1. As given (explicit path)
+      2. presets/<preset_ref>
+      3. presets/<preset_ref>.json
+      4. presets/<preset_ref>.yaml / .yml
+    """
+    p = Path(preset_ref)
+    if p.exists():
+        return p
+
+    presets_dir = Path("presets")
+
+    if presets_dir.exists() and presets_dir.is_dir():
+        # presets/name
+        cand = presets_dir / preset_ref
+        if cand.exists():
+            return cand
+
+        # presets/name.json / .yaml / .yml
+        for ext in (".json", ".yaml", ".yml"):
+            cand = presets_dir / (preset_ref + ext)
+            if cand.exists():
+                return cand
+
+    return None
+
+
 def load_preset(preset_ref: str) -> Dict[str, Any]:
     """
     preset_ref:
@@ -283,15 +348,14 @@ def load_preset(preset_ref: str) -> Dict[str, Any]:
             die(f"Preset '{name_part}' in '{p}' must be a dict.")
         return merge_with_builtin_defaults(preset)
 
-    p = Path(preset_ref)
-    if p.exists():
+    p = resolve_preset_path(preset_ref)
+    if p is not None:
         data = load_preset_file(p)
         if isinstance(data, dict) and all(isinstance(k, str) for k in data.keys()):
-            # Could be a single preset dict or a dict of presets.
-            # If it "looks like" a single preset (contains font_size or padding), treat as single.
+            # Single preset dict
             if "font_size" in data or "padding" in data or "max_width_px" in data:
-                return merge_with_builtin_defaults(preset)
-            # Otherwise ambiguous multi-preset: require name.
+                return dict(data)
+            # Multi-preset file requires explicit name
             die(f"Preset file '{p}' appears to contain multiple presets. Use '{p}:preset_name'.")
         die(f"Preset file '{p}' must be a dict.")
     die(f"Preset '{preset_ref}' not found (not a built-in name and file does not exist).")
@@ -320,6 +384,37 @@ def parse_hex_color(color: str) -> Tuple[int, int, int]:
     return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
 
 
+def ass_newlines_to_real(s: str) -> str:
+    # Convert ASS hard/soft line breaks into real newlines for manipulation
+    # \N = hard newline, \n = soft newline
+    return s.replace(r"\N", "\n").replace(r"\n", "\n")
+
+
+def tokenize_karaoke_with_newlines(text: str) -> List[str]:
+    """
+    Tokenize text into karaoke tokens while preserving explicit line breaks.
+
+    Returns a flat token list where '\n' marks a line break.
+    """
+    lines = text.split("\n")
+    tokens: List[str] = []
+    for i, line in enumerate(lines):
+        # tokenizes words/punct for that line
+        tokens.extend(tokenize_words_for_karaoke(line))
+        if i != len(lines) - 1:
+            tokens.append("\n")
+    return tokens
+
+
+def tokenize_words_for_karaoke(text: str) -> List[str]:
+    """
+    Tokenize into 'word-like' chunks while preserving punctuation as separate tokens when attached.
+    Keeps whitespace implicit (we reinsert single spaces between tokens for subtitles).
+    """
+    # Split words/punct: "Hello, world!" -> ["Hello", ",", "world", "!"]
+    return re.findall(r"\w+(?:'\w+)?|[^\w\s]", text, flags=re.UNICODE)
+
+
 def ms_to_ass_time(ms: int) -> str:
     """
     pysubs2 handles timings, but sometimes helpful.
@@ -338,6 +433,122 @@ def clamp_int(x: int, lo: int, hi: int) -> int:
 # -----------------------------
 # Animation tag injection
 # -----------------------------
+
+def build_karaoke_ass_text(
+    plain_text: str,
+    event_duration_ms: int,
+    anim: Dict[str, Any],
+) -> str:
+    """
+    Convert plain text into ASS karaoke segments using \\k tags.
+    Returns a text string (no surrounding {...} wrapper needed beyond the per-token tags).
+    """
+    tokens = tokenize_karaoke_with_newlines(plain_text)
+    if not tokens:
+        return plain_text
+
+    lead_in_ms = int(anim.get("lead_in_ms", 0))
+    min_word_ms = int(anim.get("min_word_ms", 60))
+    max_word_ms = int(anim.get("max_word_ms", 400))
+    punct_pause_ms = int(anim.get("punct_pause_ms", 120))
+    mode = (anim.get("mode") or "even").strip().lower()
+
+    available_ms = max(0, event_duration_ms - lead_in_ms)
+    if available_ms <= 0:
+        return plain_text
+
+    # Identify which tokens are "words" vs punctuation
+    def _is_word_token(t: str) -> bool:
+        return t != "\n" and bool(re.match(r"^\w", t, flags=re.UNICODE))
+
+    is_word = [_is_word_token(t) for t in tokens]
+    word_indices = [i for i, w in enumerate(is_word) if w]
+
+    if not word_indices:
+        return plain_text
+
+    # Allocate timing per token (centiseconds)
+    # We assign time primarily to words; punctuation gets a small pause or zero.
+    token_ms = [0] * len(tokens)
+
+    if mode == "even":
+        # Evenly distribute across words, then sprinkle punctuation pauses
+        base = available_ms / max(1, len(word_indices))
+        for i in word_indices:
+            token_ms[i] = int(round(base))
+
+    elif mode == "weighted":
+        # Weight by word length (longer words get more time)
+        lengths = [len(tokens[i]) for i in word_indices]
+        total = sum(lengths) or 1
+        for idx, i in enumerate(word_indices):
+            token_ms[i] = int(round(available_ms * (lengths[idx] / total)))
+
+    else:
+        die(f"Unsupported word_reveal mode '{mode}' (use 'even' or 'weighted').")
+
+    # Apply min/max bounds to words, then renormalize to fit available_ms.
+    # First clamp:
+    for i in word_indices:
+        token_ms[i] = clamp_int(token_ms[i], min_word_ms, max_word_ms)
+
+    # Add punctuation pauses AFTER punctuation tokens, counted from remaining budget.
+    # We'll treat punctuation as "pause" tokens if they are punctuation.
+    punct = set([",", ".", "!", "?", ";", ":", "…"])
+    punct_indices = [i for i, t in enumerate(tokens) if t != "\n" and t in punct]
+    for i in punct_indices:
+        token_ms[i] = int(punct_pause_ms)
+
+    # Renormalize to match available_ms
+    total_alloc = sum(token_ms)
+    if total_alloc <= 0:
+        return plain_text
+
+    scale = available_ms / total_alloc
+    for i in range(len(token_ms)):
+        token_ms[i] = int(round(token_ms[i] * scale))
+
+    # Convert ms to centiseconds for \k
+    def ms_to_cs(ms: int) -> int:
+        return max(0, int(round(ms / 10.0)))
+
+    parts: List[str] = []
+
+    # Optional lead-in: use \k for silence by attaching it to a zero-width tag.
+    if lead_in_ms > 0:
+        parts.append(r"{\k" + str(ms_to_cs(lead_in_ms)) + r"}")
+
+    # Build token stream. We insert spaces between word tokens and punctuation sensibly:
+    # - punctuation attaches to previous token (no preceding space)
+    # - words after punctuation get a space (except opening punctuation not handled here)
+    out = ""
+    prev_token: Optional[str] = None
+
+    for i, t in enumerate(tokens):
+        if t == "\n":
+             # Use a real newline in-memory; pysubs2 will serialize it as \N in the .ass
+            out += "\n"
+            prev_token = "\n"
+            continue
+
+        cs = ms_to_cs(token_ms[i])
+
+        # Spacing rules (reset after newline)
+        if prev_token is not None and prev_token != "\n":
+            if t in (",", ".", "!", "?", ";", ":", "…"):
+                # no leading space before punctuation
+                pass
+            elif prev_token in ("'", "“", "‘", "(", "[", "{"):
+                # no space after open-quote/paren
+                pass
+            else:
+                out += " "
+
+        out += r"{\k" + str(cs) + r"}" + t
+        prev_token = t
+
+    return out
+
 
 def build_animation_override(anim: Dict[str, Any]) -> str:
     r"""
@@ -617,7 +828,10 @@ def convert_srt_to_ass(
 
     anim_override = ""
     if apply_animation:
-        anim_override = build_animation_override(dict(preset.get("animation") or {}))
+        anim = dict(preset.get("animation") or {})
+        atype = (anim.get("type") or "none").strip().lower()
+        if atype != "word_reveal":
+            anim_override = build_animation_override(anim)
 
     base_blur = float(preset.get("blur_px", 0))
     base_blur_override = fr"\blur{int(base_blur)}" if base_blur and base_blur > 0 else ""
@@ -625,8 +839,16 @@ def convert_srt_to_ass(
     for ev in subs.events:
         if not isinstance(ev, pysubs2.SSAEvent):
             continue
-        text = normalize_whitespace(ev.text)
+        text = ass_newlines_to_real(normalize_whitespace(ev.text))
         text = wrap_text_to_width(text, font, max_width_px=max_width_px)
+
+        anim = dict(preset.get("animation") or {})
+        atype = (anim.get("type") or "none").strip().lower()
+
+        if apply_animation and atype == "word_reveal":
+            duration_ms = int(ev.end) - int(ev.start)
+            text = build_karaoke_ass_text(text, duration_ms, anim)
+
         # Apply base blur and animations
         # Ensure base blur is always applied first for consistent look
         combined_override = ""
@@ -685,7 +907,7 @@ def reskin_ass(
         if strip_existing_overrides:
             txt = strip_ass_tags(txt)
 
-        txt = normalize_whitespace(txt)
+        txt = ass_newlines_to_real(normalize_whitespace(txt))
         txt = wrap_text_to_width(txt, font, max_width_px=max_width_px)
 
         combined_override = ""
@@ -1202,7 +1424,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Render a transparent subtitle overlay video (ProRes 4444 alpha) for DaVinci Resolve."
     )
-    ap.add_argument("input", help="Input subtitle file (.srt or .ass)")
+    ap.add_argument(
+        "--list-presets",
+        action="store_true",
+        help="List available presets (built-in and presets/ directory) and exit.",
+    )
+    ap.add_argument("input", nargs="?", help="Input subtitle file (.srt or .ass)")
     ap.add_argument(
         "--out",
         default=None,
@@ -1284,8 +1511,13 @@ def main() -> int:
         help="Interactive iteration mode: tweak preset settings and re-render quickly.",
     )
 
-
     args = ap.parse_args()
+
+    if args.list_presets:
+        list_available_presets()
+        return 0
+    if not args.list_presets and not args.input:
+        die("Input subtitle file is required unless --list-presets is used.")
 
     prog = Progress(enabled=not args.quiet)
 
