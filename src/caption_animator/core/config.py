@@ -91,6 +91,12 @@ class PresetConfig:
     # Animation
     animation: Optional[AnimationConfig] = None
 
+    # Video codec settings
+    video_codec: str = "libx264"  # Default to H.264 for smaller files
+    video_quality: str = "small"  # small (H.264), medium (ProRes 422 HQ), large (ProRes 4444)
+    h264_crf: int = 18  # 18 = visually lossless for H.264
+    prores_profile: int = 3  # 3 = ProRes 422 HQ, 4 = ProRes 4444
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PresetConfig":
         """

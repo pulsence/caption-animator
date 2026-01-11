@@ -121,7 +121,8 @@ def render_subtitle(
         progress.step("Rendering overlay video via FFmpeg...")
         renderer = FFmpegRenderer(
             loglevel=args.loglevel,
-            show_progress=not (args.quiet or args.hide_ffmpeg_progress)
+            show_progress=not (args.quiet or args.hide_ffmpeg_progress),
+            quality=args.quality
         )
 
         renderer.render(
@@ -152,6 +153,83 @@ def render_subtitle(
     print(f"Overlay size: {size.width}x{size.height} @ {args.fps} fps", file=sys.stderr)
 
 
+def process_batch(args, input_files: list, preset) -> tuple:
+    """
+    Process multiple subtitle files in batch mode.
+
+    Args:
+        args: Parsed command-line arguments
+        input_files: List of Path objects to process
+        preset: PresetConfig to use for all files
+
+    Returns:
+        Tuple of (success_count, failure_count, failed_files)
+    """
+    import glob
+
+    success_count = 0
+    failure_count = 0
+    failed_files = []
+    total = len(input_files)
+
+    print(f"\nBatch processing {total} file(s)...", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+
+    for idx, input_path in enumerate(input_files, 1):
+        input_path = Path(input_path)
+
+        # Skip if file doesn't exist
+        if not input_path.exists():
+            print(f"[{idx}/{total}] SKIP: {input_path} (not found)", file=sys.stderr)
+            failure_count += 1
+            failed_files.append((input_path, "File not found"))
+            continue
+
+        # Skip if not a subtitle file
+        if input_path.suffix.lower() not in ('.srt', '.ass'):
+            print(f"[{idx}/{total}] SKIP: {input_path} (not .srt/.ass)", file=sys.stderr)
+            failure_count += 1
+            failed_files.append((input_path, "Invalid file type"))
+            continue
+
+        # Determine output path
+        if args.batch_output_dir:
+            output_dir = Path(args.batch_output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / input_path.with_suffix(".mov").name
+        else:
+            output_path = input_path.with_suffix(".mov")
+
+        # Process file
+        try:
+            print(f"\n[{idx}/{total}] Processing: {input_path.name}", file=sys.stderr)
+            print(f"            Output: {output_path}", file=sys.stderr)
+
+            render_subtitle(input_path, output_path, preset, args)
+
+            print(f"[{idx}/{total}] SUCCESS: {input_path.name}", file=sys.stderr)
+            success_count += 1
+
+        except Exception as e:
+            print(f"[{idx}/{total}] FAILED: {input_path.name} - {e}", file=sys.stderr)
+            failure_count += 1
+            failed_files.append((input_path, str(e)))
+
+    # Print summary
+    print("\n" + "=" * 60, file=sys.stderr)
+    print(f"Batch processing complete:", file=sys.stderr)
+    print(f"  Total: {total} files", file=sys.stderr)
+    print(f"  Success: {success_count}", file=sys.stderr)
+    print(f"  Failed: {failure_count}", file=sys.stderr)
+
+    if failed_files:
+        print(f"\nFailed files:", file=sys.stderr)
+        for path, reason in failed_files:
+            print(f"  - {path}: {reason}", file=sys.stderr)
+
+    return success_count, failure_count, failed_files
+
+
 def main(argv=None) -> int:
     """
     Main CLI entry point.
@@ -168,6 +246,52 @@ def main(argv=None) -> int:
         # Handle --list-presets
         if args.list_presets:
             return list_presets_command()
+
+        # Handle batch processing mode
+        if args.batch or args.batch_list:
+            import glob
+
+            # Resolve input files
+            input_files = []
+
+            if args.batch_list:
+                # Read file list from file
+                list_path = Path(args.batch_list)
+                if not list_path.exists():
+                    print(f"ERROR: Batch list file not found: {list_path}", file=sys.stderr)
+                    return 2
+                with open(list_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            input_files.append(Path(line))
+            elif args.batch:
+                # Use input as glob pattern
+                pattern = args.input
+                matched_files = glob.glob(pattern, recursive=False)
+                if not matched_files:
+                    print(f"ERROR: No files matched pattern: {pattern}", file=sys.stderr)
+                    return 2
+                input_files = [Path(f) for f in matched_files]
+
+            if not input_files:
+                print("ERROR: No input files to process", file=sys.stderr)
+                return 2
+
+            # Load preset
+            loader = PresetLoader()
+            preset = loader.load(args.preset)
+
+            # Process batch
+            success_count, failure_count, _ = process_batch(args, input_files, preset)
+
+            # Return exit code based on results
+            if failure_count > 0 and success_count == 0:
+                return 1  # All failed
+            elif failure_count > 0:
+                return 3  # Some failed
+            else:
+                return 0  # All succeeded
 
         # Validate input file
         input_path = Path(args.input)

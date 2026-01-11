@@ -38,7 +38,8 @@ class FFmpegRenderer:
         self,
         loglevel: str = "error",
         show_progress: bool = True,
-        ffmpeg_path: Optional[str] = None
+        ffmpeg_path: Optional[str] = None,
+        quality: str = "small"
     ):
         """
         Initialize FFmpeg renderer.
@@ -47,10 +48,12 @@ class FFmpegRenderer:
             loglevel: FFmpeg log level (quiet, error, warning, info, debug)
             show_progress: Whether to show render progress
             ffmpeg_path: Path to ffmpeg binary (if None, searches PATH)
+            quality: Output quality preset (small/medium/large)
         """
         self.loglevel = loglevel
         self.show_progress = show_progress
         self.ffmpeg_path = ffmpeg_path or self._find_ffmpeg()
+        self.quality = quality
 
     def _find_ffmpeg(self) -> str:
         """
@@ -69,6 +72,46 @@ class FFmpegRenderer:
                 "it is available in your system PATH."
             )
         return ffmpeg
+
+    def _build_h264_args(self) -> list:
+        """
+        Build H.264 codec arguments.
+
+        Returns:
+            List of FFmpeg arguments for H.264 encoding
+        """
+        return [
+            "-c:v", "libx264",
+            "-crf", "18",  # Visually lossless quality
+            "-preset", "slow",  # Better compression
+            "-pix_fmt", "yuva420p",  # Alpha support
+        ]
+
+    def _build_prores_422hq_args(self) -> list:
+        """
+        Build ProRes 422 HQ codec arguments.
+
+        Returns:
+            List of FFmpeg arguments for ProRes 422 HQ encoding
+        """
+        return [
+            "-c:v", "prores_ks",
+            "-profile:v", "3",  # ProRes 422 HQ
+            "-pix_fmt", "yuv422p10le",
+        ]
+
+    def _build_prores_4444_args(self) -> list:
+        """
+        Build ProRes 4444 codec arguments (with alpha).
+
+        Returns:
+            List of FFmpeg arguments for ProRes 4444 encoding
+        """
+        return [
+            "-c:v", "prores_ks",
+            "-profile:v", "4",  # ProRes 4444
+            "-pix_fmt", "yuva444p10le",
+        ]
 
     def render(
         self,
@@ -97,11 +140,31 @@ class FFmpegRenderer:
         ass_escaped = self._escape_filter_path(ass_path)
 
         # Build filter chain
-        video_filter = (
-            f"format=rgba,"
-            f"subtitles=filename='{ass_escaped}':alpha=1:original_size={w}x{h},"
-            f"format=yuva444p10le"
-        )
+        # Build codec-specific video filter and command args
+        if self.quality == "small":
+            # H.264 with transparency support (using overlay)
+            video_filter = (
+                f"format=rgba,"
+                f"subtitles=filename='{ass_escaped}':alpha=1:original_size={w}x{h},"
+                f"format=yuva420p"
+            )
+            codec_args = self._build_h264_args()
+        elif self.quality == "medium":
+            # ProRes 422 HQ (no alpha)
+            video_filter = (
+                f"format=rgba,"
+                f"subtitles=filename='{ass_escaped}':alpha=1:original_size={w}x{h},"
+                f"format=yuv422p10le"
+            )
+            codec_args = self._build_prores_422hq_args()
+        else:  # large
+            # ProRes 4444 (with alpha)
+            video_filter = (
+                f"format=rgba,"
+                f"subtitles=filename='{ass_escaped}':alpha=1:original_size={w}x{h},"
+                f"format=yuva444p10le"
+            )
+            codec_args = self._build_prores_4444_args()
 
         # Build FFmpeg command
         cmd = [
@@ -113,13 +176,13 @@ class FFmpegRenderer:
             "-t", f"{duration_sec:.3f}",
             "-i", f"color=c=black@0.0:s={w}x{h}:r={fps}",
             "-vf", video_filter,
-            "-c:v", "prores_ks",
-            "-profile:v", "4",  # ProRes 4444
-            "-pix_fmt", "yuva444p10le",
+        ]
+        cmd.extend(codec_args)
+        cmd.extend([
             "-r", fps,
             "-an",  # No audio
             str(output_path),
-        ]
+        ])
 
         # Add progress reporting if requested
         if self.show_progress:

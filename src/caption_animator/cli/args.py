@@ -15,7 +15,11 @@ def create_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="caption-animator",
-        description="Render transparent subtitle overlay videos (ProRes 4444 alpha) for DaVinci Resolve.",
+        description=(
+            "Render transparent subtitle overlay videos for DaVinci Resolve.\n\n"
+            "NOTE: Default output changed from ProRes 4444 to H.264 (--quality small).\n"
+            "Use --quality large if you need alpha channel transparency."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -28,8 +32,21 @@ Examples:
   # Use named preset from multi-preset file
   caption-animator input.srt --preset presets.yaml:fancy --out overlay.mov
 
+  # Change output quality (default is small/H.264)
+  caption-animator input.srt --quality medium  # ProRes 422 HQ
+  caption-animator input.srt --quality large   # ProRes 4444 with alpha
+
   # Interactive mode for tweaking
   caption-animator input.srt --interactive
+
+  # Batch process all SRT files in directory
+  caption-animator "*.srt" --batch --preset modern_box
+
+  # Batch with output directory
+  caption-animator "subtitles/*.srt" --batch --batch-output-dir output/
+
+  # Batch from file list
+  caption-animator --batch-list files.txt --batch-output-dir rendered/
 
   # List available presets
   caption-animator --list-presets
@@ -110,6 +127,19 @@ Examples:
         help="Multiplier to avoid edge clipping. Default: 1.12"
     )
 
+    parser.add_argument(
+        "--quality",
+        choices=["small", "medium", "large"],
+        default="small",
+        help=(
+            "Output quality/size preset. "
+            "small: H.264 (~5-10MB/min, universal compatibility), "
+            "medium: ProRes 422 HQ (~220Mbps, no alpha), "
+            "large: ProRes 4444 (~330Mbps, with alpha). "
+            "Default: small"
+        )
+    )
+
     # Output options
     parser.add_argument(
         "--keep-ass",
@@ -149,6 +179,23 @@ Examples:
         "-i",
         action="store_true",
         help="Interactive mode: tweak preset settings and re-render"
+    )
+
+    # Batch processing mode
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Batch mode: treat input as glob pattern (e.g., '*.srt')"
+    )
+
+    parser.add_argument(
+        "--batch-list",
+        help="File containing list of input files to process (one per line)"
+    )
+
+    parser.add_argument(
+        "--batch-output-dir",
+        help="Output directory for batch processing (default: same as input)"
     )
 
     return parser

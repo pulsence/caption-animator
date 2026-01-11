@@ -25,7 +25,10 @@ class WordRevealAnimation(BaseAnimation):
         lead_in_ms: Delay before first word appears (default: 0)
         min_word_ms: Minimum time per word (default: 60)
         max_word_ms: Maximum time per word (default: 400)
-        punct_pause_ms: Extra pause after punctuation (default: 120)
+        unrevealed_color: Color for unrevealed text in #RRGGBB format (default: None, uses primary color)
+
+    Note: Words immediately followed by punctuation (e.g., "Hello," or "world!") are
+    revealed together as a single unit for more natural appearance.
 
     Example preset:
         {
@@ -35,7 +38,7 @@ class WordRevealAnimation(BaseAnimation):
                 "lead_in_ms": 0,
                 "min_word_ms": 60,
                 "max_word_ms": 400,
-                "punct_pause_ms": 120
+                "unrevealed_color": "#808080"
             }
         }
     """
@@ -83,7 +86,6 @@ class WordRevealAnimation(BaseAnimation):
         lead_in_ms = int(self.params.get("lead_in_ms", 0))
         min_word_ms = int(self.params.get("min_word_ms", 60))
         max_word_ms = int(self.params.get("max_word_ms", 400))
-        punct_pause_ms = int(self.params.get("punct_pause_ms", 120))
         mode = str(self.params.get("mode", "even")).strip().lower()
 
         available_ms = max(0, event_duration_ms - lead_in_ms)
@@ -100,19 +102,24 @@ class WordRevealAnimation(BaseAnimation):
         # Allocate timing to each token
         token_ms = self._allocate_timing(
             tokens, word_indices, available_ms, mode,
-            min_word_ms, max_word_ms, punct_pause_ms
+            min_word_ms, max_word_ms
         )
 
         # Build output with \\k tags
         return self._build_output(tokens, token_ms, lead_in_ms)
 
     def _tokenize_with_newlines(self, text: str) -> List[str]:
-        """
+        r"""
         Tokenize text preserving newlines.
+
+        Handles both real newlines (\n) and ASS escape sequences (\N).
 
         Returns:
             List of tokens where "\n" represents a line break
         """
+        # Split on both real newlines and ASS \N escape sequences
+        # Replace \N with actual newline first for consistent processing
+        text = text.replace(r"\N", "\n")
         lines = text.split("\n")
         tokens: List[str] = []
 
@@ -126,11 +133,16 @@ class WordRevealAnimation(BaseAnimation):
     @staticmethod
     def _tokenize_words(text: str) -> List[str]:
         """
-        Tokenize into words and punctuation.
+        Tokenize into words with trailing punctuation grouped together.
 
-        Example: "Hello, world!" -> ["Hello", ",", "world", "!"]
+        Words immediately followed by punctuation are kept as single tokens
+        so they reveal together.
+
+        Example: "Hello, world!" -> ["Hello,", "world!"]
+        Example: "Wait... what?" -> ["Wait...", "what?"]
         """
-        return re.findall(r"\w+(?:'\w+)?|[^\w\s]", text, flags=re.UNICODE)
+        # Match: word + optional trailing punctuation, OR standalone punctuation
+        return re.findall(r"\w+(?:'\w+)?[^\w\s]*|[^\w\s]+", text, flags=re.UNICODE)
 
     @staticmethod
     def _is_word_token(token: str) -> bool:
@@ -144,8 +156,7 @@ class WordRevealAnimation(BaseAnimation):
         available_ms: int,
         mode: str,
         min_word_ms: int,
-        max_word_ms: int,
-        punct_pause_ms: int
+        max_word_ms: int
     ) -> List[int]:
         """
         Allocate timing to each token.
@@ -157,7 +168,6 @@ class WordRevealAnimation(BaseAnimation):
             mode: "even" or "weighted"
             min_word_ms: Minimum time per word
             max_word_ms: Maximum time per word
-            punct_pause_ms: Pause after punctuation
 
         Returns:
             List of milliseconds for each token
@@ -187,11 +197,14 @@ class WordRevealAnimation(BaseAnimation):
         for i in word_indices:
             token_ms[i] = self._clamp(token_ms[i], min_word_ms, max_word_ms)
 
-        # Add punctuation pauses
-        punct = {",", ".", "!", "?", ";", ":", "…"}
-        punct_indices = [i for i, t in enumerate(tokens) if t != "\n" and t in punct]
-        for i in punct_indices:
-            token_ms[i] = int(punct_pause_ms)
+        # Handle standalone punctuation (not attached to words)
+        # These get minimal time as they're just visual
+        standalone_punct_indices = [
+            i for i, t in enumerate(tokens)
+            if t != "\n" and not self._is_word_token(t) and t.strip()
+        ]
+        for i in standalone_punct_indices:
+            token_ms[i] = min(50, available_ms // max(1, len(tokens)))
 
         # Renormalize to match available_ms
         total_alloc = sum(token_ms)
@@ -219,6 +232,17 @@ class WordRevealAnimation(BaseAnimation):
 
         out = ""
 
+        # Apply unrevealed color if specified
+        unrevealed_color = self.params.get("unrevealed_color")
+        if unrevealed_color:
+            # Convert #RRGGBB to ASS &HBBGGRR format
+            if unrevealed_color.startswith("#") and len(unrevealed_color) == 7:
+                r = unrevealed_color[1:3]
+                g = unrevealed_color[3:5]
+                b = unrevealed_color[5:7]
+                ass_color = f"&H{b.upper()}{g.upper()}{r.upper()}"
+                out += r"{\2c" + ass_color + r"}"
+
         # Optional lead-in
         if lead_in_ms > 0:
             out += r"{\k" + str(ms_to_cs(lead_in_ms)) + r"}"
@@ -227,8 +251,8 @@ class WordRevealAnimation(BaseAnimation):
 
         for i, token in enumerate(tokens):
             if token == "\n":
-                # Preserve newlines
-                out += "\n"
+                # Preserve newlines as ASS escape
+                out += r"\N"
                 prev_token = "\n"
                 continue
 
@@ -236,11 +260,11 @@ class WordRevealAnimation(BaseAnimation):
 
             # Add spacing between tokens
             if prev_token is not None and prev_token != "\n":
-                # No space before punctuation
-                if token in (",", ".", "!", "?", ";", ":", "…"):
+                # No space if token starts with punctuation (standalone punctuation)
+                if token and not token[0].isalnum() and token[0] not in ("'", '"', "'"):
                     pass
                 # No space after opening quotes/parens
-                elif prev_token in ("'", '"', "'", "(", "[", "{"):
+                elif prev_token and prev_token[-1] in ("'", '"', "'", "(", "[", "{"):
                     pass
                 else:
                     out += " "
@@ -258,5 +282,5 @@ class WordRevealAnimation(BaseAnimation):
             "lead_in_ms": 0,
             "min_word_ms": 60,
             "max_word_ms": 400,
-            "punct_pause_ms": 120
+            "unrevealed_color": None
         }

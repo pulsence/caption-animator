@@ -112,7 +112,7 @@ See [libass documentation](https://github.com/libass/libass?tab=readme-ov-file) 
   "outline_color": "#000000",
   "outline_px": 6,
   "padding": [44, 70, 56, 70],
-  "animation": {
+  "animation": { 
     "type": "slide_up",
     "in_ms": 140,
     "out_ms": 120,

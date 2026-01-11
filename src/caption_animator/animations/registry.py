@@ -144,6 +144,33 @@ class AnimationRegistry:
         }
 
     @classmethod
+    def list(cls) -> List[str]:
+        """
+        List all registered animation types (alias for list_types).
+
+        Returns:
+            Sorted list of animation type names
+        """
+        return cls.list_types()
+
+    @classmethod
+    def get_defaults(cls, animation_type: str) -> Dict[str, Any]:
+        """
+        Get default parameters for a specific animation type.
+
+        Args:
+            animation_type: The animation type (e.g., "fade", "slide_up")
+
+        Returns:
+            Dictionary of default parameter names and values
+
+        Raises:
+            ValueError: If the animation type is not registered
+        """
+        animation_class = cls.get(animation_type)
+        return animation_class.get_default_params()
+
+    @classmethod
     def clear(cls) -> None:
         """
         Clear all registered animations.
