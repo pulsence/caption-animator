@@ -15,11 +15,7 @@ def create_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="caption-animator",
-        description=(
-            "Render transparent subtitle overlay videos for DaVinci Resolve.\n\n"
-            "NOTE: Default output changed from ProRes 4444 to H.264 (--quality small).\n"
-            "Use --quality large if you need alpha channel transparency."
-        ),
+        description="Render transparent subtitle overlay videos for DaVinci Resolve.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

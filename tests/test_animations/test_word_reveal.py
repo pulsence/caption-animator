@@ -9,7 +9,7 @@ from caption_animator.animations.word_reveal import WordRevealAnimation
 
 
 class TestWordRevealNewlineHandling:
-    """Test suite specifically for newline handling in word_reveal (TODO #2 fix)."""
+    """Test suite for newline handling in word_reveal animation."""
 
     def test_single_line_no_newlines(self):
         """Test that single line text works correctly."""

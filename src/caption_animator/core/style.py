@@ -114,8 +114,6 @@ class StyleBuilder:
         """
         Create a pysubs2 Color object from RGB values.
 
-        This method handles compatibility across different pysubs2 versions.
-
         Args:
             rgb: Tuple of (r, g, b) integers
             alpha: Alpha value (0=opaque, 255=fully transparent, ASS convention)
@@ -124,10 +122,4 @@ class StyleBuilder:
             pysubs2.Color object
         """
         r, g, b = rgb
-
-        # Try the standard 4-argument constructor first
-        try:
-            return pysubs2.Color(r, g, b, alpha)
-        except TypeError:
-            # Fallback for older pysubs2 versions that only accept (r, g, b)
-            return pysubs2.Color(r, g, b)
+        return pysubs2.Color(r, g, b, alpha)
